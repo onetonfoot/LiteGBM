@@ -1,0 +1,9 @@
+name = "LiteGBM"
+uuid = "ecca4087-3283-4caa-aa31-5b72e0672c1a"
+authors = ["Dominic Morgan <dominic.mark.morgan@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
