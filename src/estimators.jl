@@ -1,4 +1,4 @@
-using .LibLightGBM: BoosterHandle
+using .LibLightGBM: BoosterHandle, LGBM_BoosterFree
 
 include("dataset.jl")
 
@@ -249,6 +249,7 @@ function get_eval_names(model::LGBM)
     [string(split(s, "\0")[1]) for s in out_strs ]
 end
 
+"Returns the evaluation metrics as a dict"
 function get_eval(model, dataset_type = :train)
     if model.booster.handle == C_NULL
         error("No booster avaliable please train model first")
