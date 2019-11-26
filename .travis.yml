@@ -6,6 +6,7 @@ codecov: true
 coveralls: false
 
 before_install:
+  - brew update
   - brew install lightgbm
 
 os:
