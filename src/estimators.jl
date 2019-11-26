@@ -365,14 +365,37 @@ function load_parameters(filename :: AbstractString)
     NamedTuple{Tuple(keys(d))}(values(d))
 end
 
-function parsenum(s)
-    try 
-        return parse(Int,s)
-    catch
-        return parse(Float64,s)
+"""
+* num_iter - Index of the iteration that should be dumped, <= 0 means dump all
+* importance_type - Can be either :gain or :split
+"""
+function feature_importance(model :: LGBM ; num_iter :: Int = 0, importance_type :: Symbol = :split)
+
+    if model.booster == C_NULL
+        error("Please train model first")
     end
+
+    importance_type = if importance_type == :split
+        0
+    elseif importance_type == :gain
+        1
+    else
+        error("Imporance type must be either :gain or :split")
+    end
+
+    current_iter = get_current_iter(model) 
+
+    if current_iter <= num_iter 
+        error("Number iter is greater than current iter")
+    end
+
+    _, n = size(model.booster.train_set)
+    feature_importance = Array{Float64}(undef, n)
+    LibLightGBM.LGBM_BoosterFeatureImportance(model.booster.handle, num_iter, importance_type, feature_importance)
+    feature_importance
 end
 
+# TODO think of a better error structure
 struct BoosterNotTrained <: Exception
     s :: String
 end

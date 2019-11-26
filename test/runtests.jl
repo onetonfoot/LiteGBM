@@ -44,6 +44,8 @@ end
     LiteGBM.add_test_data!(model, test_set)
     @test LiteGBM.get_eval(model, :valid) isa Dict
 
+    @test length(LiteGBM.feature_importance(model)) == 1
+
 end 
 
 @testset "wrong order" begin
