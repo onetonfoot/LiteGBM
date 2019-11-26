@@ -4,10 +4,11 @@ include("dataset.jl")
 
 mutable struct Booster
     handle::BoosterHandle
-    datasets::Vector{Dataset}
+    train_set::Union{Dataset, Nothing}
+    test_set::Union{Dataset, Nothing}
 
-    function Booster(handle::BoosterHandle, datasets::Vector{Dataset})
-        bst = new(handle, datasets)
+    function Booster(handle::BoosterHandle, train_set :: Union{Nothing, Dataset}, test_set :: Union{Nothing, Dataset})
+        bst = new(handle, train_set, test_set)
         finalizer(Booster_finalizer,bst)
         return bst
     end
@@ -21,16 +22,12 @@ mutable struct Booster
 end
 
 function Booster()
-    return Booster(C_NULL, Dataset[])
+    return Booster(C_NULL, nothing, nothing)
 end
 
 function Booster(handle::BoosterHandle)
-    return Booster(handle, Dataset[])
+    return Booster(handle, nothing, nothing)
 end
-
-# TODO shouldn't the dataset parameters be detached from the booster ?!
-# Creating the struct should also create the handle to the booster model
-# Not during the fit method
 
 mutable struct LGBM{T}
     booster::Booster
@@ -121,9 +118,9 @@ end
 Return a LGBMRegression estimator.
 """
 
-@enum BoosterType binary regression multiclass
+@enum BoosterType Binary Regression Multiclass
 
-function LGBM(t::BoosterType; num_iterations = 10,
+function LGBM(T :: BoosterType ; num_iterations = 10,
                         learning_rate = .1,
                         num_leaves = 127,
                         max_depth = -1,
@@ -157,7 +154,7 @@ function LGBM(t::BoosterType; num_iterations = 10,
                         local_listen_port = 12400,
                         time_out = 120,
                         machine_list_file = "",
-                        device_type="cpu")
+                        device_type="cpu") 
 
     @assert(in(tree_learner, ("serial", "feature", "data")),
             "Unknown tree_learner, got $tree_learner")
@@ -165,7 +162,7 @@ function LGBM(t::BoosterType; num_iterations = 10,
                                 "multi_logloss", "multi_error")),
                          "Unknown metric, got $m"), metric)
 
-    return LGBM{t}(Booster(), String[], "regression", num_iterations, learning_rate, num_leaves,
+    return LGBM{T}(Booster() , String[], "regression", num_iterations, learning_rate, num_leaves,
                           max_depth, tree_learner, num_threads, histogram_pool_size,
                           min_data_in_leaf, min_sum_hessian_in_leaf, lambda_l1, lambda_l2,
                           min_gain_to_split, feature_fraction, feature_fraction_seed,
@@ -177,9 +174,9 @@ function LGBM(t::BoosterType; num_iterations = 10,
                           machine_list_file,1,device_type)
 end
 
-LGBMRegression(kwargs...) = LGBM(regression, kwargs...)
-LGBMBinary(;kwargs...) = LGBM(binary, kwargs...)
-LGBMMulticlass(;kwargs...) = LGBM(multiclass, kwargs...)
+LGBMRegression(kwargs...) = LGBM(Regression, kwargs...)
+LGBMBinary(;kwargs...) = LGBM(Binary, kwargs...)
+LGBMMulticlass(;kwargs...) = LGBM(Multiclass, kwargs...)
 
 const BOOSTERPARAMS = [:application, :learning_rate, :num_leaves, :max_depth, :tree_learner,
                        :num_threads, :histogram_pool_size, :min_data_in_leaf,
@@ -189,9 +186,11 @@ const BOOSTERPARAMS = [:application, :learning_rate, :num_leaves, :max_depth, :t
                        :is_unbalance, :metric, :is_training_metric, :ndcg_at, :num_machines,
                        :local_listen_port, :time_out, :machine_list_file, :num_class,:device]
 
-function train!(model, dataset)
+
+# TODO add verboisty flag verboisty=1  #or some int
+# TODO add epochs and early_stopping_round
+function train!(model :: LGBM , dataset :: Dataset) where T <: BoosterType
     if model.booster.handle == C_NULL
-        # TODO add verboisty flag verboisty=1  #or some int
         create_booster!(model, dataset)
     end
 
@@ -212,6 +211,7 @@ function create_booster!(model::LGBM, dataset::Dataset)
         booster_handle
     ) |> maybe_error
     model.booster = Booster(booster_handle[])
+    model.booster.train_set = dataset
     model
 end
 
@@ -242,6 +242,12 @@ function get_eval_counts(model::LGBM)
 end
 
 function get_eval_names(model::LGBM)
+
+    # Doesn't this need to be here?
+    if model.booster.handle == C_NULL
+        throw(BoosterNotTrained("Need to train model first"))
+    end
+
     n_metrics = LiteGBM.get_eval_counts(model)
     out_len = Ref{Cint}()
     out_strs = [ " " ^ 256 for _ in 1:n_metrics]
@@ -250,23 +256,20 @@ function get_eval_names(model::LGBM)
 end
 
 "Returns the evaluation metrics as a dict"
-function get_eval(model, dataset_type = :train)
+function get_eval(model :: LGBM, dataset_type = :train)
+
     if model.booster.handle == C_NULL
-        error("No booster avaliable please train model first")
+        throw(BoosterNotTrained("Need to train model first"))
     end
 
-    data_idx = if dataset_type == :valid
-        if get_eval_counts(model) >= 1
-            1
-        else
-            @warn "No :valid dataset using :train"
-            0
-        end
-    elseif dataset_type == :train
+    data_idx = if dataset_type == :train 
+        isnothing(model.booster.train_set) && error("Model has no training set")
         0
+    elseif dataset_type == :valid
+        isnothing(model.booster.test_set) && error("Model has no test set")
+        1
     else
-        @warn "Unknown evaluation type $dataset_type using :train"
-        0
+        error("Invalid dataset type use either :train of :valid")
     end
 
     metrics = get_eval_names(model)
@@ -276,6 +279,100 @@ function get_eval(model, dataset_type = :train)
     LibLightGBM.LGBM_BoosterGetEval(model.booster.handle, data_idx, out_results ,out_results)
     Dict(zip(metrics, out_results))
 end
+
+"""
+Saves the model to the file
+
+* start_iter - start index of the iteration to be saved
+* num_iter - the number of iterations to save
+
+"""
+function save(model :: LGBM, filename :: AbstractString, start_iter = 0, num_iters = 0)
+    if model.booster.handle == C_NULL
+        throw(BoosterNotTrained("Need to train model first"))
+    end
+
+    n_iters = get_current_iter(model)
+
+    if start_iter + num_iters > n_iters
+        error("Number of iterations is to many total is $n_iters. Tried to save $start_iter to $(start_iter + num_iters)")
+    end
+
+    if ispath(filename) 
+        error("$filename already exists")
+    end
+
+    result = LibLightGBM.LGBM_BoosterSaveModel(model.booster.handle, start_iter, num_iters, filename)
+
+    if result == 0
+        return 
+    else
+        error("Unknown error saving model - $(LibLightGBM.LGBM_GetLastError() |> unsafe_string)")
+    end
+
+end
    
+function load(filename :: AbstractString)
+    out_num_iter = Ref{Cint}()
+    booster = Booster()
+    handle = Ref{BoosterHandle}()
 
+    if !isfile(filename)
+        error("$filename doens't exists")
+    end
 
+    result = LibLightGBM.LGBM_BoosterCreateFromModelfile(filename, out_num_iter, handle)
+    
+    if result == 0
+        booster.handle = handle[]
+        num_class = Ref{Cint}()
+        LibLightGBM.LGBM_BoosterGetNumClasses(booster.handle,  num_class)
+
+        # TODO need to load other relevant parameters!
+        # and support other objectives e.g classification 
+        parameters = load_parameters(filename)
+
+        deleteat!
+
+        model = LGBM(Regression; parameters...)
+        model.booster = booster
+        model.num_class = num_class[]
+
+        return booster
+    else
+        error("Error loading model")
+    end
+
+end
+
+function load_parameters(filename :: AbstractString)
+
+    s = read(filename, String)
+    d = Dict{Symbol, Any}()
+    fields = Dict(zip(fieldnames(LGBM), fieldtypes(LGBM)))
+
+    # TODO handle parameters other than Float or Int
+    for m in eachmatch(r"\[([\w_)]+): (.+)\]", s)
+        key = Symbol(m[1])
+        if haskey(fields,key) && fields[key] <: Number
+            val = parse(Float64,m[2])
+            d[key] = convert(fields[key], val)
+        end
+    end
+
+    delete!(d, :num_class)
+
+    NamedTuple{Tuple(keys(d))}(values(d))
+end
+
+function parsenum(s)
+    try 
+        return parse(Int,s)
+    catch
+        return parse(Float64,s)
+    end
+end
+
+struct BoosterNotTrained <: Exception
+    s :: String
+end

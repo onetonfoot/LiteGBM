@@ -44,20 +44,20 @@ mutable struct Dataset
     end
 end
 
-# LGBM_DatasetUpdateParam
-
-function Dataset(X::Matrix{T}, y) where T <: Union{Float32, Float64} 
+function Dataset(X::Matrix{T}, y, train_dataset :: Union{Nothing, Dataset} = nothing) where T <: Union{Float32, Float64} 
 
     is_row_major = false
     nrows, ncols = size(X)
     data_type = jltype_to_lgbmid(T)
     ref = Ref{DatasetHandle}()
 
+    train_ref = isnothing(train_dataset) ? C_NULL : train_dataset.handle
+
     # TODO add relevant dataset parameters 
     parameters = ""
 
     LibLightGBM.LGBM_DatasetCreateFromMat(
-        X, data_type, nrows, ncols, is_row_major, parameters, C_NULL, ref
+        X, data_type, nrows, ncols, is_row_major, parameters, train_ref, ref
     ) |> maybe_error
 
     dataset = Dataset(ref[])
@@ -65,39 +65,16 @@ function Dataset(X::Matrix{T}, y) where T <: Union{Float32, Float64}
     return dataset
 end
 
-const DATASETPARAMS = [:is_sparse, :max_bin, :data_random_seed, :categorical_feature]
-
-
-
-# TODO should this add the datasets to the booster struct?
-function create_dataset(model, X::Matrix{T}, y ; ref = C_NULL) where T <: Union{Float32, Float64}
-
-    is_row_major = false
-    nrows, ncols = size(X)
-    data_type = jltype_to_lgbmid(T)
-    dataset_ref = DatasetHandle()
-    out = Ref{DatasetHandle}()
-    # Should detach the dataset parameters from the model instance
-    parameters = stringifyparams(model, DATASETPARAMS)
-
-    LibLightGBM.LGBM_DatasetCreateFromMat(
-        X, data_type, nrows, ncols, is_row_major, parameters, ref, out
-    ) |> maybe_error
-
-    dataset = Dataset(out[])
-
-    set_label(y, dataset.handle)
-    return dataset
-end
-
 # TODO Should be able to pass a list of categorical_features
-function create_train_dataset(model, X::Matrix{T}, y; 
+# rename add traning set
+# Maybe rename to add parameters for something like that
+function create_train_dataset(X::Matrix{T}, y; 
         weights=[],
         groups=[],
         init_score = [],
         ) where T <: Union{Float32, Float64}
 
-    dataset = create_dataset(model, X, y)
+    dataset = Dataset(X, y)
 
     for (data, fn) in zip([weights, groups, init_score], [set_weight, set_group, set_init_score])
         if !isempty(data)
@@ -108,20 +85,22 @@ function create_train_dataset(model, X::Matrix{T}, y;
     return dataset
 end
 
-function create_valid_dataset(model, X::Matrix{T}, y, ref) where T <: Union{Float32, Float64}
 
+function add_test_data!(model, test_set)
     if model.booster.handle == C_NULL
         error("Model has no associated booster yet. Please add a training dataset first!")
     end
 
-    dataset = create_dataset(model, X, y; ref = ref)
-    LibLightGBM.LGBM_BoosterAddValidData(model.booster.handle, dataset.handle) |> maybe_error
-    return dataset
+    if isnothing(model.booster.train_set) 
+        error("Need to add training before validation data first")
+    end
+
+    #Should assert that the columns match
+
+    LibLightGBM.LGBM_BoosterAddValidData(model.booster.handle, test_set.handle) |> maybe_error
+    model.booster.test_set = test_set
 end
 
-
-
-# Set things
 
 function set_group(groups, handle::DatasetHandle)
     groups = convert(Vector{Int32}, groups)
@@ -165,10 +144,6 @@ function Base.size(dataset::Dataset)
     LibLightGBM.LGBM_DatasetGetNumFeature(dataset.handle, y) |> maybe_error
     (x[], y[])
 end
-
-
-
-
 
 # X::Union{String, Matrix, DataFrame, Vector{Matrix}} # For now just matrix
 # y::Array{T}
