@@ -5,6 +5,9 @@ julia:
 codecov: true
 coveralls: false
 
+before_install:
+  - brew install lightgbm
+
 os:
   - osx
 
