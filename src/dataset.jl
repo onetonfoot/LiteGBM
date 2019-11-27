@@ -29,6 +29,7 @@ mutable struct Dataset
     categorical_feature::Array{Int}
     # params 
     # free_raw_data
+    # label 
 
     function Dataset(handle::DatasetHandle)
         ds = new(handle)
@@ -56,6 +57,7 @@ function Dataset(X::Matrix{T}, y, train_dataset :: Union{Nothing, Dataset} = not
     # TODO add relevant dataset parameters 
     parameters = ""
 
+    # TODO How to handle a matrix with mixed features? Strings Floats Ints 
     LibLightGBM.LGBM_DatasetCreateFromMat(
         X, data_type, nrows, ncols, is_row_major, parameters, train_ref, ref
     ) |> maybe_error
@@ -73,6 +75,8 @@ function create_train_dataset(X::Matrix{T}, y;
         groups=[],
         init_score = [],
         ) where T <: Union{Float32, Float64}
+    
+
 
     dataset = Dataset(X, y)
 
@@ -84,7 +88,6 @@ function create_train_dataset(X::Matrix{T}, y;
     
     return dataset
 end
-
 
 function add_test_data!(model, test_set)
     if model.booster.handle == C_NULL

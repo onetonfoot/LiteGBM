@@ -118,9 +118,24 @@ end
 Return a LGBMRegression estimator.
 """
 
-@enum BoosterType Binary Regression Multiclass
+# TODO add support for morre objectives and metrics
+# https://lightgbm.readthedocs.io/en/latest/Parameters.html#metric-parameters
 
-function LGBM(T :: BoosterType ; num_iterations = 10,
+abstract type Objective  end
+struct Regression <: Objective end
+struct Multiclass <: Objective end
+struct Binary <: Objective end
+
+get_metrics(::Regression)  = ["l1", "l2"]
+get_metrics(::Multiclass) = ["multi_logloss", "multi_error"]
+get_metrics(::Binary) = ["binary_logloss", "binary_error"]
+
+Base.string(::Regression) = "regression"
+Base.string(::Multiclass) = "multiclass"
+Base.string(::Binary) = "binary"
+
+
+function LGBM(objective :: Objective  ; num_iterations = 10,
                         learning_rate = .1,
                         num_leaves = 127,
                         max_depth = -1,
@@ -146,7 +161,7 @@ function LGBM(T :: BoosterType ; num_iterations = 10,
                         categorical_feature = Int[],
                         sigmoid = 1.,
                         is_unbalance = false,
-                        metric = ["l2"],
+                        metric = get_metrics(objective),
                         metric_freq = 1,
                         is_training_metric = false,
                         ndcg_at = Int[],
@@ -158,11 +173,16 @@ function LGBM(T :: BoosterType ; num_iterations = 10,
 
     @assert(in(tree_learner, ("serial", "feature", "data")),
             "Unknown tree_learner, got $tree_learner")
-    foreach(m -> @assert(in(m, ("l1", "l2", "ndcg", "auc", "binary_logloss", "binary_error",
-                                "multi_logloss", "multi_error")),
-                         "Unknown metric, got $m"), metric)
 
-    return LGBM{T}(Booster() , String[], "regression", num_iterations, learning_rate, num_leaves,
+    supported_metrics = get_metrics(objective)
+
+    for m in metric
+        if !(m in supported_metrics)
+            error("The metric $m not supported for the objective $objective")
+        end
+    end
+
+    return LGBM{objective}(Booster() , String[], string(objective), num_iterations, learning_rate, num_leaves,
                           max_depth, tree_learner, num_threads, histogram_pool_size,
                           min_data_in_leaf, min_sum_hessian_in_leaf, lambda_l1, lambda_l2,
                           min_gain_to_split, feature_fraction, feature_fraction_seed,
@@ -174,9 +194,9 @@ function LGBM(T :: BoosterType ; num_iterations = 10,
                           machine_list_file,1,device_type)
 end
 
-LGBMRegression(kwargs...) = LGBM(Regression, kwargs...)
-LGBMBinary(;kwargs...) = LGBM(Binary, kwargs...)
-LGBMMulticlass(;kwargs...) = LGBM(Multiclass, kwargs...)
+LGBMRegression(kwargs...) = LGBM(Regression(), kwargs...)
+LGBMBinary(;kwargs...) = LGBM(Binary(), kwargs...)
+LGBMMulticlass(;kwargs...) = LGBM(Multiclass(), kwargs...)
 
 const BOOSTERPARAMS = [:application, :learning_rate, :num_leaves, :max_depth, :tree_learner,
                        :num_threads, :histogram_pool_size, :min_data_in_leaf,
@@ -189,14 +209,12 @@ const BOOSTERPARAMS = [:application, :learning_rate, :num_leaves, :max_depth, :t
 
 # TODO add verboisty flag verboisty=1  #or some int
 # TODO add epochs and early_stopping_round
-function train!(model :: LGBM , dataset :: Dataset) where T <: BoosterType
+function train!(model :: LGBM , dataset :: Dataset) 
     if model.booster.handle == C_NULL
         create_booster!(model, dataset)
     end
 
     success = Ref{Cint}()
-    # Doesn't seem to be working
-
     LibLightGBM.LGBM_BoosterUpdateOneIter(model.booster.handle, success)
     success[] 
 end
@@ -226,6 +244,26 @@ function get_current_iter(model::LGBM)
     else
         n = Ref{Cint}()
         LibLightGBM.LGBM_BoosterGetCurrentIteration(model.booster.handle, n) |> maybe_error
+        n[]
+    end
+end
+
+function get_num_class(model::LGBM)
+    if model.booster.handle == C_NULL
+        error("Please train booster first")
+    else
+        n = Ref{Cint}()
+        LibLightGBM.LGBM_BoosterGetEvalNames(model.booster.handle, n) |> maybe_error
+        n[]
+    end
+end
+
+function get_num_features(model::LGBM)
+    if model.booster.handle == C_NULL
+        error("Please train booster first")
+    else
+        n = Ref{Cint}()
+        LibLightGBM.LGBM_BoosterGetEvalFeatures(model.booster.handle, n) |> maybe_error
         n[]
     end
 end
